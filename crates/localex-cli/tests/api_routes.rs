@@ -18,6 +18,7 @@ fn test_state() -> AppState {
         db,
         backlinks: std::sync::Arc::new(RwLock::new(backlink_index)),
         watch_tx,
+        render_cache: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     }
 }
 

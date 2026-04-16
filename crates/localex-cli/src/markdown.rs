@@ -17,10 +17,13 @@ pub struct FileEntry {
 }
 
 pub fn scan_workspace(root: &Path) -> Vec<FileEntry> {
-    build_tree(root, root)
+    build_tree(root, root, 0)
 }
 
-fn build_tree(root: &Path, prefix: &Path) -> Vec<FileEntry> {
+fn build_tree(root: &Path, prefix: &Path, depth: usize) -> Vec<FileEntry> {
+    if depth > 64 {
+        return Vec::new();
+    }
     let mut entries: Vec<FileEntry> = Vec::new();
 
     let read_dir = match std::fs::read_dir(prefix) {
@@ -45,7 +48,7 @@ fn build_tree(root: &Path, prefix: &Path) -> Vec<FileEntry> {
         let rel_str = rel.to_string_lossy().to_string();
 
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            let children = build_tree(root, &full_path);
+            let children = build_tree(root, &full_path, depth + 1);
             if !children.is_empty() {
                 entries.push(FileEntry {
                     path: rel_str,
@@ -68,7 +71,7 @@ fn build_tree(root: &Path, prefix: &Path) -> Vec<FileEntry> {
 
 // ── Markdown rendering ──
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct RenderedDocument {
     pub html: String,
     pub headings: Vec<Heading>,

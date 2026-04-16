@@ -80,11 +80,27 @@ pub fn create_highlight(conn: &Connection, input: &CreateHighlight) -> Result<Hi
             input.color.as_deref().unwrap_or("yellow"),
         ),
     )?;
-    let id = conn.last_insert_rowid();
-    Ok(list_highlights(conn, &input.document_path)?
-        .into_iter()
-        .find(|h| h.id == id)
-        .unwrap())
+    get_highlight_by_id(conn, conn.last_insert_rowid())
+}
+
+fn get_highlight_by_id(conn: &Connection, id: i64) -> Result<Highlight> {
+    conn.query_row(
+        "SELECT id, document_path, quote_text, prefix_context, suffix_context, heading_slug, color, created_at, updated_at FROM highlights WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(Highlight {
+                id: row.get(0)?,
+                document_path: row.get(1)?,
+                quote_text: row.get(2)?,
+                prefix_context: row.get(3)?,
+                suffix_context: row.get(4)?,
+                heading_slug: row.get(5)?,
+                color: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        },
+    ).map_err(|e| anyhow::anyhow!("failed to fetch highlight {id}: {e}"))
 }
 
 pub fn delete_highlight(conn: &Connection, id: i64) -> Result<bool> {
@@ -124,11 +140,25 @@ pub fn create_note(conn: &Connection, input: &CreateNote) -> Result<Note> {
             &input.body,
         ),
     )?;
-    let id = conn.last_insert_rowid();
-    Ok(list_notes(conn, &input.document_path)?
-        .into_iter()
-        .find(|n| n.id == id)
-        .unwrap())
+    get_note_by_id(conn, conn.last_insert_rowid())
+}
+
+fn get_note_by_id(conn: &Connection, id: i64) -> Result<Note> {
+    conn.query_row(
+        "SELECT id, highlight_id, document_path, anchor_text, body, created_at, updated_at FROM notes WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(Note {
+                id: row.get(0)?,
+                highlight_id: row.get(1)?,
+                document_path: row.get(2)?,
+                anchor_text: row.get(3)?,
+                body: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        },
+    ).map_err(|e| anyhow::anyhow!("failed to fetch note {id}: {e}"))
 }
 
 pub fn delete_note(conn: &Connection, id: i64) -> Result<bool> {

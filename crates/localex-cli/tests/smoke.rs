@@ -23,6 +23,7 @@ fn make_state() -> AppState {
         db,
         backlinks: std::sync::Arc::new(RwLock::new(backlink_index)),
         watch_tx,
+        render_cache: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     }
 }
 
@@ -36,6 +37,7 @@ fn make_state_for_dir(tmp: &std::path::Path) -> AppState {
         db,
         backlinks: std::sync::Arc::new(RwLock::new(backlink_index)),
         watch_tx,
+        render_cache: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
     }
 }
 

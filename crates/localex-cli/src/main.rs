@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, sync::RwLock};
+use std::{collections::HashMap, fs, path::PathBuf, sync::RwLock};
 
 use anyhow::Result;
 use clap::Parser;
@@ -53,8 +53,47 @@ async fn main() -> Result<()> {
         config,
         db: database,
         backlinks: std::sync::Arc::new(RwLock::new(backlink_index)),
-        watch_tx,
+        watch_tx: watch_tx.clone(),
+        render_cache: std::sync::Arc::new(std::sync::RwLock::new(HashMap::new())),
     };
+
+    // Background task: rebuild backlink index on file changes (debounced)
+    {
+        let bl_state = state.backlinks.clone();
+        let ws_root = state.config.workspace_root.clone();
+        let mut bl_rx = watch_tx.subscribe();
+        tokio::spawn(async move {
+            let mut debounce = tokio::time::Instant::now();
+            loop {
+                match bl_rx.recv().await {
+                    Ok(_) => {
+                        // Debounce: wait 2s after last event before rebuilding
+                        debounce = tokio::time::Instant::now();
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        if debounce.elapsed() < std::time::Duration::from_millis(1900) {
+                            continue; // another event arrived, keep waiting
+                        }
+                        let ws = ws_root.clone();
+                        match tokio::task::spawn_blocking(move || backlinks::build_index(&ws)).await {
+                            Ok(new_index) => {
+                                *bl_state.write().unwrap() = new_index;
+                                eprintln!("Backlink index rebuilt");
+                            }
+                            Err(e) => eprintln!("Backlink rebuild failed: {e}"),
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        eprintln!("Backlink watcher lagged {n} events, rebuilding");
+                        let ws = ws_root.clone();
+                        if let Ok(new_index) = tokio::task::spawn_blocking(move || backlinks::build_index(&ws)).await {
+                            *bl_state.write().unwrap() = new_index;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
 
     let address = format!("{}:{}", state.config.host, state.config.port);
     let listener = TcpListener::bind(&address).await?;

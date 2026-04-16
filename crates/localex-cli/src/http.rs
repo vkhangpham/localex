@@ -68,8 +68,15 @@ async fn reader_defaults(State(state): State<Arc<AppState>>) -> Json<ReaderPrefe
 }
 
 async fn files(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let tree = markdown::scan_workspace(&state.config.workspace_root);
-    Json(tree)
+    let root = state.config.workspace_root.clone();
+    let tree = tokio::task::spawn_blocking(move || markdown::scan_workspace(&root)).await;
+    match tree {
+        Ok(t) => Json(t).into_response(),
+        Err(e) => {
+            let err = json!({ "error": format!("{e}") });
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(err)).into_response()
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -83,9 +90,45 @@ async fn render(
 ) -> impl IntoResponse {
     match markdown::safe_resolve(&state.config.workspace_root, &query.path) {
         Ok(full_path) => {
+            // Extension check — only render markdown files
+            let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext != "md" && ext != "markdown" {
+                let err = json!({ "error": "not a markdown file" });
+                return (axum::http::StatusCode::BAD_REQUEST, Json(err)).into_response();
+            }
+
+            // Size check — cap at 4MB
+            match std::fs::metadata(&full_path) {
+                Ok(meta) if meta.len() > 4 * 1024 * 1024 => {
+                    let err = json!({ "error": "file too large to render" });
+                    return (axum::http::StatusCode::PAYLOAD_TOO_LARGE, Json(err)).into_response();
+                }
+                Err(e) => {
+                    let err = json!({ "error": format!("failed to stat file: {e}") });
+                    return (axum::http::StatusCode::NOT_FOUND, Json(err)).into_response();
+                }
+                _ => {}
+            }
+
+            let mtime = std::fs::metadata(&full_path).ok().and_then(|m| m.modified().ok());
+
+            // Check render cache
+            if let Some(mt) = mtime {
+                let cache = state.render_cache.read().unwrap();
+                if let Some((cached_mtime, cached_doc)) = cache.get(&full_path) {
+                    if *cached_mtime == mt {
+                        return Json(cached_doc.clone()).into_response();
+                    }
+                }
+            }
+
             match std::fs::read_to_string(&full_path) {
                 Ok(content) => {
                     let doc = markdown::render_markdown(&content);
+                    // Store in cache
+                    if let Some(mt) = mtime {
+                        state.render_cache.write().unwrap().insert(full_path, (mt, doc.clone()));
+                    }
                     Json(doc).into_response()
                 }
                 Err(e) => {
@@ -104,21 +147,29 @@ async fn render(
 // ── Themes ──
 
 async fn list_themes(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let themes = themes::list_themes(&state.config.data_dir);
-    Json(json!({ "themes": themes }))
+    let data_dir = state.config.data_dir.clone();
+    let result = tokio::task::spawn_blocking(move || themes::list_themes(&data_dir)).await;
+    match result {
+        Ok(themes) => Json(json!({ "themes": themes })),
+        Err(e) => Json(json!({ "error": format!("{e}") })),
+    }
 }
 
 async fn theme_css(
     State(state): State<Arc<AppState>>,
     AxumPath(name): AxumPath<String>,
 ) -> impl IntoResponse {
-    match themes::load_theme_css(&state.config.data_dir, &name) {
-        Ok(css) => {
-            ([("content-type", "text/css")], css).into_response()
+    let data_dir = state.config.data_dir.clone();
+    let result = tokio::task::spawn_blocking(move || themes::load_theme_css(&data_dir, &name)).await;
+    match result {
+        Ok(Ok(css)) => ([("content-type", "text/css")], css).into_response(),
+        Ok(Err(e)) => {
+            let err = json!({ "error": format!("{e}") });
+            (axum::http::StatusCode::NOT_FOUND, Json(err)).into_response()
         }
         Err(e) => {
             let err = json!({ "error": format!("{e}") });
-            (axum::http::StatusCode::NOT_FOUND, Json(err)).into_response()
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(err)).into_response()
         }
     }
 }
@@ -129,11 +180,15 @@ async fn get_preference(
     State(state): State<Arc<AppState>>,
     AxumPath(key): AxumPath<String>,
 ) -> Json<Value> {
-    let conn = state.db.lock().unwrap();
-    let value = db::get_preference(&conn, &key);
-    match value {
-        Some(v) => Json(json!({ "key": key, "value": v })),
-        None => Json(json!({ "key": key, "value": null })),
+    let db = state.db.clone();
+    let key_clone = key.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap();
+        db::get_preference(&conn, &key_clone)
+    }).await;
+    match result {
+        Ok(Some(v)) => Json(json!({ "key": key, "value": v })),
+        _ => Json(json!({ "key": key, "value": null })),
     }
 }
 
@@ -147,10 +202,14 @@ async fn set_preference(
     State(state): State<Arc<AppState>>,
     Json(body): Json<SetPrefRequest>,
 ) -> Json<Value> {
-    let conn = state.db.lock().unwrap();
-    match db::set_preference(&conn, &body.key, &body.value) {
-        Ok(()) => Json(json!({ "ok": true })),
-        Err(e) => Json(json!({ "error": format!("{e}") })),
+    let db = state.db.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap();
+        db::set_preference(&conn, &body.key, &body.value)
+    }).await;
+    match result {
+        Ok(Ok(())) => Json(json!({ "ok": true })),
+        _ => Json(json!({ "error": "failed to set preference" })),
     }
 }
 
@@ -181,10 +240,14 @@ async fn list_highlights(
     State(state): State<Arc<AppState>>,
     Query(query): Query<HighlightsQuery>,
 ) -> Json<Value> {
-    let conn = state.db.lock().unwrap();
-    match highlights::list_highlights(&conn, &query.path) {
-        Ok(h) => Json(json!({ "highlights": h })),
-        Err(e) => Json(json!({ "error": format!("{e}") })),
+    let db = state.db.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap();
+        highlights::list_highlights(&conn, &query.path)
+    }).await;
+    match result {
+        Ok(Ok(h)) => Json(json!({ "highlights": h })),
+        _ => Json(json!({ "error": "failed to list highlights" })),
     }
 }
 
@@ -192,11 +255,15 @@ async fn create_highlight(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateHighlight>,
 ) -> impl IntoResponse {
-    let conn = state.db.lock().unwrap();
-    match highlights::create_highlight(&conn, &body) {
-        Ok(h) => Json(h).into_response(),
-        Err(e) => {
-            let err = json!({ "error": format!("{e}") });
+    let db = state.db.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap();
+        highlights::create_highlight(&conn, &body)
+    }).await;
+    match result {
+        Ok(Ok(h)) => Json(h).into_response(),
+        _ => {
+            let err = json!({ "error": "failed to create highlight" });
             (axum::http::StatusCode::BAD_REQUEST, Json(err)).into_response()
         }
     }
@@ -206,15 +273,19 @@ async fn delete_highlight(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<i64>,
 ) -> impl IntoResponse {
-    let conn = state.db.lock().unwrap();
-    match highlights::delete_highlight(&conn, id) {
-        Ok(true) => Json(json!({ "ok": true })).into_response(),
-        Ok(false) => {
+    let db = state.db.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap();
+        highlights::delete_highlight(&conn, id)
+    }).await;
+    match result {
+        Ok(Ok(true)) => Json(json!({ "ok": true })).into_response(),
+        Ok(Ok(false)) => {
             let err = json!({ "error": "not found" });
             (axum::http::StatusCode::NOT_FOUND, Json(err)).into_response()
         }
-        Err(e) => {
-            let err = json!({ "error": format!("{e}") });
+        _ => {
+            let err = json!({ "error": "failed to delete highlight" });
             (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(err)).into_response()
         }
     }
@@ -231,10 +302,14 @@ async fn list_notes(
     State(state): State<Arc<AppState>>,
     Query(query): Query<NotesQuery>,
 ) -> Json<Value> {
-    let conn = state.db.lock().unwrap();
-    match highlights::list_notes(&conn, &query.path) {
-        Ok(n) => Json(json!({ "notes": n })),
-        Err(e) => Json(json!({ "error": format!("{e}") })),
+    let db = state.db.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap();
+        highlights::list_notes(&conn, &query.path)
+    }).await;
+    match result {
+        Ok(Ok(n)) => Json(json!({ "notes": n })),
+        _ => Json(json!({ "error": "failed to list notes" })),
     }
 }
 
@@ -242,11 +317,15 @@ async fn create_note(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateNote>,
 ) -> impl IntoResponse {
-    let conn = state.db.lock().unwrap();
-    match highlights::create_note(&conn, &body) {
-        Ok(n) => Json(n).into_response(),
-        Err(e) => {
-            let err = json!({ "error": format!("{e}") });
+    let db = state.db.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap();
+        highlights::create_note(&conn, &body)
+    }).await;
+    match result {
+        Ok(Ok(n)) => Json(n).into_response(),
+        _ => {
+            let err = json!({ "error": "failed to create note" });
             (axum::http::StatusCode::BAD_REQUEST, Json(err)).into_response()
         }
     }
@@ -256,15 +335,19 @@ async fn delete_note(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<i64>,
 ) -> impl IntoResponse {
-    let conn = state.db.lock().unwrap();
-    match highlights::delete_note(&conn, id) {
-        Ok(true) => Json(json!({ "ok": true })).into_response(),
-        Ok(false) => {
+    let db = state.db.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = db.lock().unwrap();
+        highlights::delete_note(&conn, id)
+    }).await;
+    match result {
+        Ok(Ok(true)) => Json(json!({ "ok": true })).into_response(),
+        Ok(Ok(false)) => {
             let err = json!({ "error": "not found" });
             (axum::http::StatusCode::NOT_FOUND, Json(err)).into_response()
         }
-        Err(e) => {
-            let err = json!({ "error": format!("{e}") });
+        _ => {
+            let err = json!({ "error": "failed to delete note" });
             (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(err)).into_response()
         }
     }
