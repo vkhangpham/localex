@@ -114,40 +114,63 @@ export default function App() {
       .catch((e) => setError(e.message));
   }, []);
 
-  // Live reload via SSE
+  // Live reload via SSE with reconnection
   useEffect(() => {
-    const es = new EventSource('/api/events');
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let lastRefresh = 0;
 
-    es.onmessage = (e) => {
-      const now = Date.now();
-      if (now - lastRefresh < 300) return;
-      lastRefresh = now;
+    function connect() {
+      es = new EventSource('/api/events');
 
-      try {
-        const data = JSON.parse(e.data);
-        const changedPaths: string[] = data.paths || [];
+      es.onmessage = (e) => {
+        const now = Date.now();
+        if (now - lastRefresh < 300) return;
+        lastRefresh = now;
 
-        if (data.kind === 'create' || data.kind === 'remove') {
-          fetch('/api/files').then((r) => r.json()).then(setFileTree).catch(() => {});
-        }
+        try {
+          const data = JSON.parse(e.data);
+          const changedPaths: string[] = data.paths || [];
 
-        if (data.kind === 'modify' && currentPathRef.current) {
-          if (changedPaths.some((p) => p === currentPathRef.current)) {
-            fetch(`/api/render?path=${encodeURIComponent(currentPathRef.current)}`)
-              .then((r) => r.json())
-              .then((d: RenderedDoc) => { if (currentPathRef.current === changedPaths[0]) setDoc(d); })
-              .catch(() => {});
-            fetch(`/api/backlinks?path=${encodeURIComponent(currentPathRef.current)}`)
-              .then((r) => r.json())
-              .then((d) => setBacklinks(d.backlinks || []))
-              .catch(() => {});
+          if (data.kind === 'create' || data.kind === 'remove') {
+            fetch('/api/files').then((r) => r.json()).then(setFileTree).catch(() => {});
           }
-        }
-      } catch { /* ignore parse errors */ }
-    };
 
-    return () => es.close();
+          // Handle deleted current file
+          if (data.kind === 'remove' && currentPathRef.current && changedPaths.includes(currentPathRef.current)) {
+            setDoc(null);
+            setCurrentPath(null);
+            setError('File was deleted');
+          }
+
+          if (data.kind === 'modify' && currentPathRef.current) {
+            if (changedPaths.some((p) => p === currentPathRef.current)) {
+              fetch(`/api/render?path=${encodeURIComponent(currentPathRef.current)}`)
+                .then((r) => r.json())
+                .then((d: RenderedDoc) => { if (currentPathRef.current === changedPaths[0]) setDoc(d); })
+                .catch(() => {});
+              fetch(`/api/backlinks?path=${encodeURIComponent(currentPathRef.current)}`)
+                .then((r) => r.json())
+                .then((d) => setBacklinks(d.backlinks || []))
+                .catch(() => {});
+            }
+          }
+        } catch { /* ignore parse errors */ }
+      };
+
+      es.onerror = () => {
+        es?.close();
+        es = null;
+        reconnectTimer = setTimeout(connect, 3000);
+      };
+    }
+
+    connect();
+
+    return () => {
+      es?.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
   }, []);
 
   // Load saved theme on mount
@@ -183,25 +206,35 @@ export default function App() {
     currentPathRef.current = currentPath;
     setLoading(true);
     setError(null);
-    fetch(`/api/render?path=${encodeURIComponent(currentPath)}`)
+
+    const controller = new AbortController();
+    const signal = controller.signal;
+
+    fetch(`/api/render?path=${encodeURIComponent(currentPath)}`, { signal })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
       .then((data: RenderedDoc) => {
-        setDoc(data);
-        setLoading(false);
+        if (!signal.aborted) {
+          setDoc(data);
+          setLoading(false);
+        }
       })
       .catch((e) => {
-        setError(e.message);
-        setLoading(false);
+        if (!signal.aborted) {
+          setError(e.message);
+          setLoading(false);
+        }
       });
-    fetch(`/api/backlinks?path=${encodeURIComponent(currentPath)}`)
+    fetch(`/api/backlinks?path=${encodeURIComponent(currentPath)}`, { signal })
       .then((r) => r.json())
-      .then((data) => setBacklinks(data.backlinks || []))
-      .catch(() => setBacklinks([]));
-    api.fetchHighlights(currentPath).then(setHighlights).catch(() => setHighlights([]));
-    api.fetchNotes(currentPath).then(setNotes).catch(() => setNotes([]));
+      .then((data) => { if (!signal.aborted) setBacklinks(data.backlinks || []); })
+      .catch(() => { if (!signal.aborted) setBacklinks([]); });
+    api.fetchHighlights(currentPath).then((h) => { if (!signal.aborted) setHighlights(h); }).catch(() => { if (!signal.aborted) setHighlights([]); });
+    api.fetchNotes(currentPath).then((n) => { if (!signal.aborted) setNotes(n); }).catch(() => { if (!signal.aborted) setNotes([]); });
+
+    return () => controller.abort();
   }, [currentPath]);
 
   // Scroll restoration after cross-file navigation
