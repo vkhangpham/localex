@@ -1,9 +1,10 @@
 import type { JSX } from 'preact';
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+
+// ── Types ──
 
 type LayoutMode = 'one' | 'two';
 type FontKey = 'inter' | 'charter' | 'plex';
-type FocusBlock = 'image' | 'code' | 'table' | null;
 
 type ReaderSettings = {
   targetWordsPerLine: number;
@@ -12,6 +13,26 @@ type ReaderSettings = {
   fontFamily: FontKey;
   layoutMode: LayoutMode;
 };
+
+type FileEntry = {
+  path: string;
+  name: string;
+  is_dir: boolean;
+  children: FileEntry[];
+};
+
+type Heading = {
+  level: number;
+  id: string;
+  text: string;
+};
+
+type RenderedDoc = {
+  html: string;
+  headings: Heading[];
+};
+
+// ── Constants ──
 
 const DEFAULT_SETTINGS: ReaderSettings = {
   targetWordsPerLine: 12,
@@ -33,67 +54,93 @@ const FONT_LABELS: Record<FontKey, string> = {
   plex: 'IBM Plex Sans',
 };
 
-const SAMPLE_IMAGE = `data:image/svg+xml;utf8,${encodeURIComponent(`
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
-  <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#f8f2e6" />
-      <stop offset="100%" stop-color="#ece2cf" />
-    </linearGradient>
-  </defs>
-  <rect width="1280" height="720" fill="url(#bg)" rx="32" />
-  <rect x="88" y="72" width="1104" height="576" rx="28" fill="#fffdf8" stroke="#d8cdb9" />
-  <rect x="144" y="132" width="284" height="26" rx="13" fill="#d6cab5" />
-  <rect x="144" y="184" width="812" height="34" rx="17" fill="#1b1712" opacity="0.92" />
-  <rect x="144" y="246" width="944" height="18" rx="9" fill="#6b6256" opacity="0.82" />
-  <rect x="144" y="282" width="910" height="18" rx="9" fill="#6b6256" opacity="0.72" />
-  <rect x="144" y="318" width="874" height="18" rx="9" fill="#6b6256" opacity="0.64" />
-  <rect x="144" y="388" width="992" height="168" rx="24" fill="#f2ecdf" stroke="#d8cdb9" />
-  <rect x="188" y="432" width="232" height="20" rx="10" fill="#6f675b" opacity="0.78" />
-  <rect x="188" y="470" width="488" height="18" rx="9" fill="#6f675b" opacity="0.58" />
-  <rect x="188" y="506" width="444" height="18" rx="9" fill="#6f675b" opacity="0.48" />
-  <circle cx="1036" cy="250" r="74" fill="#d8cdb9" />
-  <circle cx="1036" cy="250" r="44" fill="#fff8ea" />
-</svg>
-`)}`;
-
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function App() {
+// ── App ──
+
+export default function App() {
   const [settings, setSettings] = useState<ReaderSettings>(DEFAULT_SETTINGS);
-  const [focusedBlock, setFocusedBlock] = useState<FocusBlock>(null);
+  const [fileTree, setFileTree] = useState<FileEntry[]>([]);
+  const [currentPath, setCurrentPath] = useState<string | null>(null);
+  const [doc, setDoc] = useState<RenderedDoc | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [focusedHtml, setFocusedHtml] = useState<string | null>(null);
 
+  // Fetch file tree on mount
   useEffect(() => {
-    const onZoomShortcut = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey)) {
-        return;
-      }
+    fetch('/api/files')
+      .then((r) => r.json())
+      .then(setFileTree)
+      .catch((e) => setError(e.message));
+  }, []);
 
-      const isZoomIn = event.key === '+' || event.key === '=';
-      const isZoomOut = event.key === '-' || event.key === '_';
-      const isReset = event.key === '0';
-
-      if (!(isZoomIn || isZoomOut || isReset)) {
-        return;
-      }
-
-      event.preventDefault();
-
-      setSettings((current) => {
-        if (isReset) {
-          return { ...current, fontSizePx: DEFAULT_SETTINGS.fontSizePx };
-        }
-
-        const nextFontSize = clamp(current.fontSizePx + (isZoomIn ? 1 : -1), 14, 28);
-        return { ...current, fontSizePx: nextFontSize };
+  // Fetch rendered document when path changes
+  useEffect(() => {
+    if (!currentPath) return;
+    setLoading(true);
+    setError(null);
+    fetch(`/api/render?path=${encodeURIComponent(currentPath)}`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data: RenderedDoc) => {
+        setDoc(data);
+        setLoading(false);
+      })
+      .catch((e) => {
+        setError(e.message);
+        setLoading(false);
       });
+  }, [currentPath]);
+
+  // Auto-select first file
+  useEffect(() => {
+    if (fileTree.length > 0 && !currentPath) {
+      const first = findFirstFile(fileTree);
+      if (first) setCurrentPath(first);
+    }
+  }, [fileTree, currentPath]);
+
+  // Zoom shortcut override
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const isIn = event.key === '+' || event.key === '=';
+      const isOut = event.key === '-' || event.key === '_';
+      const isReset = event.key === '0';
+      if (!(isIn || isOut || isReset)) return;
+      event.preventDefault();
+      setSettings((cur) => ({
+        ...cur,
+        fontSizePx: isReset
+          ? DEFAULT_SETTINGS.fontSizePx
+          : clamp(cur.fontSizePx + (isIn ? 1 : -1), 14, 28),
+      }));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Focus mode: click images/tables/code/pre inside rendered content
+  useEffect(() => {
+    const reader = document.querySelector('.reader-rendered');
+    if (!reader) return;
+
+    const onClick = (e: Event) => {
+      const target = e.target as HTMLElement;
+      const block = target.closest('img, pre, table');
+      if (!block) return;
+      e.preventDefault();
+      setFocusedHtml((block as HTMLElement).outerHTML);
     };
 
-    window.addEventListener('keydown', onZoomShortcut);
-    return () => window.removeEventListener('keydown', onZoomShortcut);
-  }, []);
+    reader.addEventListener('click', onClick);
+    return () => reader.removeEventListener('click', onClick);
+  }, [doc]);
 
   const readerStyle = useMemo(
     () =>
@@ -108,10 +155,8 @@ function App() {
   );
 
   const updateSetting = <K extends keyof ReaderSettings>(key: K, value: ReaderSettings[K]) => {
-    setSettings((current) => ({ ...current, [key]: value }));
+    setSettings((cur) => ({ ...cur, [key]: value }));
   };
-
-  const openFocusedBlock = (block: Exclude<FocusBlock, null>) => setFocusedBlock(block);
 
   return (
     <>
@@ -119,12 +164,16 @@ function App() {
         <aside class="sidebar sidebar-left">
           <div class="sidebar-card">
             <p class="sidebar-label">Workspace</p>
-            <h2>Markdown tree</h2>
+            <h2>Files</h2>
             <ul class="nav-list">
-              <li class="nav-item active">README.md</li>
-              <li class="nav-item">Guides/reading-principles.md</li>
-              <li class="nav-item">Design/notion-notes.md</li>
-              <li class="nav-item">Backlinks</li>
+              {fileTree.map((entry) => (
+                <FileTreeItem
+                  entry={entry}
+                  depth={0}
+                  currentPath={currentPath}
+                  onSelect={setCurrentPath}
+                />
+              ))}
             </ul>
           </div>
         </aside>
@@ -132,99 +181,20 @@ function App() {
         <main class="main-pane">
           <div class="top-strip">
             <span class="eyebrow">Calm, local, reading-first.</span>
-            <span class="hint">Ctrl/Cmd +/- overrides browser zoom and changes font size.</span>
+            <span class="hint">Ctrl/Cmd +/- text zoom. Click images/tables/code to focus.</span>
           </div>
 
           <section class="reader-frame">
             <article class="reader-surface" style={readerStyle}>
-              <div class="reader-content">
-                <p class="eyebrow">Prototype reader surface</p>
-                <h1>Localex reading shell</h1>
-                <p class="lede">
-                  Built for local Markdown folders. Wide margins, warm surfaces, precise typography, and quiet chrome.
-                  Read first. Navigate gently. Annotate without turning page into dashboard.
-                </p>
-                <p>
-                  Core controls should change text itself, not browser chrome. That means measure, line height, font
-                  size, font family, and one/two-column layout all belong to reader surface. User tunes page until it
-                  disappears.
-                </p>
-                <p>
-                  Links, references, and hover previews will let readers move through connected notes without losing
-                  place. Back stack must feel exact. Footnotes must jump cleanly and return to exact origin.
-                </p>
-
-                <div
-                  aria-label="Focus image example"
-                  class="focusable-block"
-                  onClick={() => openFocusedBlock('image')}
-                  onKeyDown={activateWithKeyboard(() => openFocusedBlock('image'))}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <img alt="Localex reading illustration" src={SAMPLE_IMAGE} />
-                  <span class="focus-hint">Click image to focus</span>
-                </div>
-
-                <p>
-                  Rich blocks should expand into their own stage. Images, tables, and code deserve temporary focus
-                  mode: centered, enlarged, background blurred, one click out to return to flow.
-                </p>
-
-                <div
-                  aria-label="Focus code example"
-                  class="focusable-block"
-                  onClick={() => openFocusedBlock('code')}
-                  onKeyDown={activateWithKeyboard(() => openFocusedBlock('code'))}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <pre>
-                    <code>{`// zoom reader text, not browser chrome\nfunction zoomReader(delta) {\n  setFontSize((size) => clamp(size + delta, 14, 28));\n}`}</code>
-                  </pre>
-                  <span class="focus-hint">Click code to focus</span>
-                </div>
-
-                <div
-                  aria-label="Focus table example"
-                  class="focusable-block"
-                  onClick={() => openFocusedBlock('table')}
-                  onKeyDown={activateWithKeyboard(() => openFocusedBlock('table'))}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Setting</th>
-                        <th>Default</th>
-                        <th>Intent</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td>Words/line</td>
-                        <td>12</td>
-                        <td>Narrow, calmer reading measure</td>
-                      </tr>
-                      <tr>
-                        <td>Line height</td>
-                        <td>1.75</td>
-                        <td>Lower fatigue on long sessions</td>
-                      </tr>
-                      <tr>
-                        <td>Columns</td>
-                        <td>1</td>
-                        <td>Switchable to 2 for scan-heavy docs</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <span class="focus-hint">Click table to focus</span>
-                </div>
-
-                <blockquote class="callout">
-                  Localex should feel closer to reading beautiful notes than managing files in IDE.
-                </blockquote>
+              <div class="reader-content reader-rendered">
+                {loading && <p>Loading...</p>}
+                {error && <p class="error-text">{error}</p>}
+                {!loading && !error && !doc && (
+                  <p>Select a file from the sidebar to start reading.</p>
+                )}
+                {doc && !loading && (
+                  <div dangerouslySetInnerHTML={{ __html: doc.html }} />
+                )}
               </div>
             </article>
           </section>
@@ -241,9 +211,7 @@ function App() {
                 aria-label="Target words per line"
                 max={18}
                 min={7}
-                onInput={(event) =>
-                  updateSetting('targetWordsPerLine', Number((event.currentTarget as HTMLInputElement).value))
-                }
+                onInput={(e) => updateSetting('targetWordsPerLine', Number((e.currentTarget as HTMLInputElement).value))}
                 type="range"
                 value={settings.targetWordsPerLine}
               />
@@ -256,7 +224,7 @@ function App() {
                 aria-label="Line height"
                 max={2}
                 min={1.4}
-                onInput={(event) => updateSetting('lineHeight', Number((event.currentTarget as HTMLInputElement).value))}
+                onInput={(e) => updateSetting('lineHeight', Number((e.currentTarget as HTMLInputElement).value))}
                 step={0.05}
                 type="range"
                 value={settings.lineHeight}
@@ -268,13 +236,11 @@ function App() {
               <span>Font family</span>
               <select
                 aria-label="Font family"
-                onChange={(event) => updateSetting('fontFamily', (event.currentTarget as HTMLSelectElement).value as FontKey)}
+                onChange={(e) => updateSetting('fontFamily', (e.currentTarget as HTMLSelectElement).value as FontKey)}
                 value={settings.fontFamily}
               >
                 {Object.entries(FONT_LABELS).map(([key, label]) => (
-                  <option key={key} value={key}>
-                    {label}
-                  </option>
+                  <option key={key} value={key}>{label}</option>
                 ))}
               </select>
             </label>
@@ -282,113 +248,102 @@ function App() {
             <div class="control-group">
               <span>Columns</span>
               <div class="toggle-row">
-                <button
-                  aria-pressed={settings.layoutMode === 'one'}
-                  onClick={() => updateSetting('layoutMode', 'one')}
-                  type="button"
-                >
-                  1 column
-                </button>
-                <button
-                  aria-pressed={settings.layoutMode === 'two'}
-                  onClick={() => updateSetting('layoutMode', 'two')}
-                  type="button"
-                >
-                  2 columns
-                </button>
+                <button aria-pressed={settings.layoutMode === 'one'} onClick={() => updateSetting('layoutMode', 'one')} type="button">1 column</button>
+                <button aria-pressed={settings.layoutMode === 'two'} onClick={() => updateSetting('layoutMode', 'two')} type="button">2 columns</button>
               </div>
             </div>
 
             <div class="control-group">
               <span>Zoom text</span>
               <div class="toggle-row">
-                <button onClick={() => updateSetting('fontSizePx', clamp(settings.fontSizePx - 1, 14, 28))} type="button">
-                  A-
-                </button>
-                <button onClick={() => updateSetting('fontSizePx', DEFAULT_SETTINGS.fontSizePx)} type="button">
-                  Reset
-                </button>
-                <button onClick={() => updateSetting('fontSizePx', clamp(settings.fontSizePx + 1, 14, 28))} type="button">
-                  A+
-                </button>
+                <button onClick={() => updateSetting('fontSizePx', clamp(settings.fontSizePx - 1, 14, 28))} type="button">A-</button>
+                <button onClick={() => updateSetting('fontSizePx', DEFAULT_SETTINGS.fontSizePx)} type="button">Reset</button>
+                <button onClick={() => updateSetting('fontSizePx', clamp(settings.fontSizePx + 1, 14, 28))} type="button">A+</button>
               </div>
               <strong>Font size: {settings.fontSizePx}px</strong>
             </div>
+
+            {doc && doc.headings.length > 0 && (
+              <div class="control-group toc-group">
+                <span>Table of contents</span>
+                <ul class="toc-list">
+                  {doc.headings.map((h) => (
+                    <li class={`toc-item toc-h${h.level}`}>
+                      <a href={`#${h.id}`} onClick={(e) => { e.preventDefault(); document.getElementById(h.id)?.scrollIntoView({ behavior: 'smooth' }); }}>
+                        {h.text}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         </aside>
       </div>
 
-      {focusedBlock ? (
-        <div aria-label="Focused block preview" aria-modal="true" class="focus-overlay" onClick={() => setFocusedBlock(null)} role="dialog">
-          <div class="focus-card" onClick={(event) => event.stopPropagation()}>
-            <button class="focus-close" onClick={() => setFocusedBlock(null)} type="button">
-              Close
-            </button>
-            {renderFocusedBlock(focusedBlock)}
+      {focusedHtml && (
+        <div aria-modal="true" class="focus-overlay" onClick={() => setFocusedHtml(null)} role="dialog">
+          <div class="focus-card" onClick={(e) => e.stopPropagation()}>
+            <button class="focus-close" onClick={() => setFocusedHtml(null)} type="button">Close</button>
+            <div class="overlay-block" dangerouslySetInnerHTML={{ __html: focusedHtml }} />
           </div>
         </div>
-      ) : null}
+      )}
     </>
   );
 }
 
-function activateWithKeyboard(action: () => void) {
-  return (event: JSX.TargetedKeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      action();
-    }
-  };
-}
+// ── File tree ──
 
-function renderFocusedBlock(block: Exclude<FocusBlock, null>) {
-  if (block === 'image') {
-    return (
-      <figure class="overlay-block overlay-image">
-        <img alt="Zoomed Localex reading illustration" src={SAMPLE_IMAGE} />
-        <figcaption>Focused image block</figcaption>
-      </figure>
-    );
-  }
+function FileTreeItem({ entry, depth, currentPath, onSelect }: {
+  entry: FileEntry;
+  depth: number;
+  currentPath: string | null;
+  onSelect: (path: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(depth < 1);
 
-  if (block === 'code') {
+  if (entry.is_dir) {
     return (
-      <div class="overlay-block">
-        <h3>Focused code block</h3>
-        <pre>
-          <code>{`const handleZoomShortcut = (event) => {\n  if (!(event.metaKey || event.ctrlKey)) return;\n  if (['+', '=', '-', '_', '0'].includes(event.key)) {\n    event.preventDefault();\n    updateReaderFont(event.key);\n  }\n};`}</code>
-        </pre>
-      </div>
+      <li>
+        <button
+          class="nav-item dir-item"
+          onClick={() => setExpanded(!expanded)}
+          style={{ paddingLeft: `${14 + depth * 12}px` }}
+          type="button"
+        >
+          {expanded ? '▾' : '▸'} {entry.name}
+        </button>
+        {expanded && entry.children.length > 0 && (
+          <ul class="nav-list">
+            {entry.children.map((child) => (
+              <FileTreeItem entry={child} depth={depth + 1} currentPath={currentPath} onSelect={onSelect} />
+            ))}
+          </ul>
+        )}
+      </li>
     );
   }
 
   return (
-    <div class="overlay-block">
-      <h3>Focused table block</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Control</th>
-            <th>Behavior</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Image focus</td>
-            <td>Center block, blur background, click out to return.</td>
-          </tr>
-          <tr>
-            <td>Code focus</td>
-            <td>Expand width and preserve scroll context.</td>
-          </tr>
-          <tr>
-            <td>Table focus</td>
-            <td>Make dense data readable without page zoom.</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <li>
+      <button
+        class={`nav-item${currentPath === entry.path ? ' active' : ''}`}
+        onClick={() => onSelect(entry.path)}
+        style={{ paddingLeft: `${14 + depth * 12}px` }}
+        type="button"
+      >
+        {entry.name}
+      </button>
+    </li>
   );
 }
 
-export default App;
+function findFirstFile(entries: FileEntry[]): string | null {
+  for (const entry of entries) {
+    if (!entry.is_dir) return entry.path;
+    const found = findFirstFile(entry.children);
+    if (found) return found;
+  }
+  return null;
+}
