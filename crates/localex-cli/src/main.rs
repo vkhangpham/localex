@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf, sync::RwLock};
 
 use anyhow::Result;
 use clap::Parser;
-use localex_cli::{app_router, AppState, backlinks, db, AppConfig};
+use localex_cli::{app_router, AppState, backlinks, db, watcher, AppConfig};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -44,10 +44,16 @@ async fn main() -> Result<()> {
         config.workspace_root.display()
     );
 
+    // Start file watcher
+    let (watch_tx, _) = tokio::sync::broadcast::channel(16);
+    watcher::start_watcher(config.workspace_root.clone(), watch_tx.clone())?;
+    eprintln!("Watching {} for changes", config.workspace_root.display());
+
     let state = AppState {
         config,
         db: database,
         backlinks: std::sync::Arc::new(RwLock::new(backlink_index)),
+        watch_tx,
     };
 
     let address = format!("{}:{}", state.config.host, state.config.port);

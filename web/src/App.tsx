@@ -114,6 +114,42 @@ export default function App() {
       .catch((e) => setError(e.message));
   }, []);
 
+  // Live reload via SSE
+  useEffect(() => {
+    const es = new EventSource('/api/events');
+    let lastRefresh = 0;
+
+    es.onmessage = (e) => {
+      const now = Date.now();
+      if (now - lastRefresh < 300) return;
+      lastRefresh = now;
+
+      try {
+        const data = JSON.parse(e.data);
+        const changedPaths: string[] = data.paths || [];
+
+        if (data.kind === 'create' || data.kind === 'remove') {
+          fetch('/api/files').then((r) => r.json()).then(setFileTree).catch(() => {});
+        }
+
+        if (data.kind === 'modify' && currentPathRef.current) {
+          if (changedPaths.some((p) => p === currentPathRef.current)) {
+            fetch(`/api/render?path=${encodeURIComponent(currentPathRef.current)}`)
+              .then((r) => r.json())
+              .then((d: RenderedDoc) => { if (currentPathRef.current === changedPaths[0]) setDoc(d); })
+              .catch(() => {});
+            fetch(`/api/backlinks?path=${encodeURIComponent(currentPathRef.current)}`)
+              .then((r) => r.json())
+              .then((d) => setBacklinks(d.backlinks || []))
+              .catch(() => {});
+          }
+        }
+      } catch { /* ignore parse errors */ }
+    };
+
+    return () => es.close();
+  }, []);
+
   // Load saved theme on mount
   useEffect(() => {
     fetch('/api/preferences/theme')

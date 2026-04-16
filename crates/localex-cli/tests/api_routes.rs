@@ -12,10 +12,12 @@ fn test_state() -> AppState {
     let config = AppConfig::for_workspace("/tmp/localex-test").unwrap();
     let db = localex_cli::db::init_db(&config.data_dir).unwrap();
     let backlink_index = backlinks::build_index(&config.workspace_root);
+    let (watch_tx, _) = tokio::sync::broadcast::channel(16);
     AppState {
         config,
         db,
         backlinks: std::sync::Arc::new(RwLock::new(backlink_index)),
+        watch_tx,
     }
 }
 

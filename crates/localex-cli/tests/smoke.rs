@@ -17,10 +17,12 @@ fn make_state() -> AppState {
     let config = AppConfig::for_workspace("/tmp/localex-smoke-test").unwrap();
     let db = localex_cli::db::init_db(&config.data_dir).unwrap();
     let backlink_index = backlinks::build_index(&config.workspace_root);
+    let (watch_tx, _) = tokio::sync::broadcast::channel(16);
     AppState {
         config,
         db,
         backlinks: std::sync::Arc::new(RwLock::new(backlink_index)),
+        watch_tx,
     }
 }
 
@@ -28,10 +30,12 @@ fn make_state_for_dir(tmp: &std::path::Path) -> AppState {
     let config = AppConfig::for_workspace(tmp).unwrap();
     let db = localex_cli::db::init_db(&config.data_dir).unwrap();
     let backlink_index = backlinks::build_index(&config.workspace_root);
+    let (watch_tx, _) = tokio::sync::broadcast::channel(16);
     AppState {
         config,
         db,
         backlinks: std::sync::Arc::new(RwLock::new(backlink_index)),
+        watch_tx,
     }
 }
 

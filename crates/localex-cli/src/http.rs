@@ -1,13 +1,17 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::{Path as AxumPath, Query, State},
     response::IntoResponse,
+    response::sse::{Event, KeepAlive, Sse},
     routing::{delete, get, post},
     Json, Router,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::db;
@@ -47,6 +51,8 @@ pub fn app_router(state: AppState) -> Router {
         .route("/api/notes", get(list_notes))
         .route("/api/notes", post(create_note))
         .route("/api/notes/{id}", delete(delete_note))
+        // live reload
+        .route("/api/events", get(sse_events))
         .with_state(shared)
         .fallback_service(static_files)
 }
@@ -262,4 +268,21 @@ async fn delete_note(
             (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Json(err)).into_response()
         }
     }
+}
+
+// ── Live Reload (SSE) ──
+
+async fn sse_events(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let rx = state.watch_tx.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|result| {
+        let event = result.ok()?;
+        let data = serde_json::to_string(&event).ok()?;
+        Some(Ok(Event::default().data(data)))
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new().interval(Duration::from_secs(15)),
+    )
 }
