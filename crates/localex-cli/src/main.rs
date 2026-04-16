@@ -1,8 +1,8 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, sync::RwLock};
 
 use anyhow::Result;
 use clap::Parser;
-use localex_cli::{app_router, AppConfig};
+use localex_cli::{app_router, AppState, backlinks, db, AppConfig};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -31,11 +31,30 @@ async fn main() -> Result<()> {
     let config = AppConfig::for_workspace(&args.directory)?.with_server(args.host, args.port);
     fs::create_dir_all(&config.data_dir)?;
 
-    let address = format!("{}:{}", config.host, config.port);
+    // Init database
+    let database = db::init_db(&config.data_dir)?;
+
+    // Ensure themes directory exists
+    fs::create_dir_all(config.data_dir.join("themes"))?;
+
+    // Build backlink index
+    let backlink_index = backlinks::build_index(&config.workspace_root);
+    eprintln!(
+        "Indexed backlinks for {} files",
+        config.workspace_root.display()
+    );
+
+    let state = AppState {
+        config,
+        db: database,
+        backlinks: std::sync::Arc::new(RwLock::new(backlink_index)),
+    };
+
+    let address = format!("{}:{}", state.config.host, state.config.port);
     let listener = TcpListener::bind(&address).await?;
 
     println!("Localex dev shell on http://{address}");
-    axum::serve(listener, app_router(config)).await?;
+    axum::serve(listener, app_router(state)).await?;
 
     Ok(())
 }

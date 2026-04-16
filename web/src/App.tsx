@@ -1,5 +1,10 @@
 import type { JSX } from 'preact';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import BacklinksPanel from './components/BacklinksPanel';
+import HighlightLayer from './components/HighlightLayer';
+import NotePanel from './components/NotePanel';
+import type { Highlight, Note } from './lib/types';
+import * as api from './lib/api';
 
 // ── Types ──
 
@@ -38,6 +43,17 @@ type LinkPreview = {
   y: number;
 };
 
+type JumpEntry = {
+  path: string;
+  scrollY: number;
+};
+
+type Backlink = {
+  source_path: string;
+  link_text: string;
+  excerpt: string;
+};
+
 // ── Constants ──
 
 const DEFAULT_SETTINGS: ReaderSettings = {
@@ -64,6 +80,12 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+function isInternalLink(href: string): boolean {
+  if (href.startsWith('#')) return true;
+  if (href.endsWith('.md') || href.endsWith('.markdown')) return true;
+  return false;
+}
+
 // ── App ──
 
 export default function App() {
@@ -74,10 +96,15 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focusedHtml, setFocusedHtml] = useState<string | null>(null);
-  const [jumpStack, setJumpStack] = useState<number[]>([]);
+  const [jumpStack, setJumpStack] = useState<JumpEntry[]>([]);
+  const [theme, setTheme] = useState<string>('light');
+  const [backlinks, setBacklinks] = useState<Backlink[]>([]);
+  const [highlights, setHighlights] = useState<Highlight[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
   const [preview, setPreview] = useState<LinkPreview | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentPathRef = useRef<string | null>(null);
+  const pendingScrollRef = useRef<number | null>(null);
 
   // Fetch file tree on mount
   useEffect(() => {
@@ -87,7 +114,34 @@ export default function App() {
       .catch((e) => setError(e.message));
   }, []);
 
-  // Fetch rendered document when path changes
+  // Load saved theme on mount
+  useEffect(() => {
+    fetch('/api/preferences/theme')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.value) {
+          applyTheme(data.value);
+          setTheme(data.value);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const applyTheme = (name: string) => {
+    document.documentElement.setAttribute('data-theme', name);
+  };
+
+  const changeTheme = (name: string) => {
+    applyTheme(name);
+    setTheme(name);
+    fetch('/api/preferences', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: 'theme', value: name }),
+    }).catch(() => {});
+  };
+
+  // Fetch rendered document + backlinks when path changes
   useEffect(() => {
     if (!currentPath) return;
     currentPathRef.current = currentPath;
@@ -106,7 +160,25 @@ export default function App() {
         setError(e.message);
         setLoading(false);
       });
+    fetch(`/api/backlinks?path=${encodeURIComponent(currentPath)}`)
+      .then((r) => r.json())
+      .then((data) => setBacklinks(data.backlinks || []))
+      .catch(() => setBacklinks([]));
+    api.fetchHighlights(currentPath).then(setHighlights).catch(() => setHighlights([]));
+    api.fetchNotes(currentPath).then(setNotes).catch(() => setNotes([]));
   }, [currentPath]);
+
+  // Scroll restoration after cross-file navigation
+  useEffect(() => {
+    if (doc && pendingScrollRef.current !== null) {
+      const y = pendingScrollRef.current;
+      pendingScrollRef.current = null;
+      // Use requestAnimationFrame to wait for DOM render
+      requestAnimationFrame(() => {
+        window.scrollTo({ top: y, behavior: 'instant' as ScrollBehavior });
+      });
+    }
+  }, [doc]);
 
   // Auto-select first file
   useEffect(() => {
@@ -138,6 +210,7 @@ export default function App() {
 
   // Focus mode: click images/tables/code/pre inside rendered content
   // Footnote jump-back: intercept footnote-ref and footnote-backref clicks
+  // Internal link navigation: cross-file .md links
   useEffect(() => {
     const reader = document.querySelector('.reader-rendered');
     if (!reader) return;
@@ -160,7 +233,7 @@ export default function App() {
         e.preventDefault();
         const href = anchor.getAttribute('href');
         if (!href) return;
-        setJumpStack((stack) => [...stack, window.scrollY]);
+        setJumpStack((stack) => [...stack, { path: currentPathRef.current || '', scrollY: window.scrollY }]);
         const targetEl = document.querySelector(href);
         targetEl?.scrollIntoView({ behavior: 'smooth' });
         return;
@@ -172,10 +245,21 @@ export default function App() {
         e.preventDefault();
         setJumpStack((stack) => {
           if (stack.length === 0) return stack;
-          const prevY = stack[stack.length - 1];
-          window.scrollTo({ top: prevY, behavior: 'smooth' });
+          const prev = stack[stack.length - 1];
+          if (prev.path === currentPathRef.current) {
+            window.scrollTo({ top: prev.scrollY, behavior: 'smooth' });
+          }
           return stack.slice(0, -1);
         });
+        return;
+      }
+
+      // Internal cross-file .md link navigation
+      const href = anchor.getAttribute('href');
+      if (href && isInternalLink(href) && !href.startsWith('#')) {
+        e.preventDefault();
+        setJumpStack((stack) => [...stack, { path: currentPathRef.current || '', scrollY: window.scrollY }]);
+        setCurrentPath(href);
         return;
       }
 
@@ -191,12 +275,17 @@ export default function App() {
     return () => reader.removeEventListener('click', onClick);
   }, [doc]);
 
-  // Back button for footnote jump stack
+  // Back button for jump stack (footnotes + cross-file nav)
   const goBack = useCallback(() => {
     setJumpStack((stack) => {
       if (stack.length === 0) return stack;
-      const prevY = stack[stack.length - 1];
-      window.scrollTo({ top: prevY, behavior: 'smooth' });
+      const prev = stack[stack.length - 1];
+      if (prev.path !== currentPathRef.current) {
+        pendingScrollRef.current = prev.scrollY;
+        setCurrentPath(prev.path);
+      } else {
+        window.scrollTo({ top: prev.scrollY, behavior: 'smooth' });
+      }
       return stack.slice(0, -1);
     });
   }, []);
@@ -205,12 +294,6 @@ export default function App() {
   useEffect(() => {
     const reader = document.querySelector('.reader-rendered');
     if (!reader) return;
-
-    const isInternalLink = (href: string): boolean => {
-      if (href.startsWith('#')) return true;
-      if (href.endsWith('.md') || href.endsWith('.markdown')) return true;
-      return false;
-    };
 
     const extractAnchorPreview = (href: string): string => {
       const id = href.slice(1);
@@ -316,6 +399,7 @@ export default function App() {
                 />
               ))}
             </ul>
+            <BacklinksPanel backlinks={backlinks} onSelect={setCurrentPath} />
           </div>
         </aside>
 
@@ -334,7 +418,12 @@ export default function App() {
                   <p>Select a file from the sidebar to start reading.</p>
                 )}
                 {doc && !loading && (
-                  <div dangerouslySetInnerHTML={{ __html: doc.html }} />
+                  <HighlightLayer
+                    currentPath={currentPath || ''}
+                    docHtml={doc.html}
+                    highlights={highlights}
+                    onHighlightsChange={setHighlights}
+                  />
                 )}
               </div>
             </article>
@@ -387,6 +476,15 @@ export default function App() {
             </label>
 
             <div class="control-group">
+              <span>Theme</span>
+              <div class="toggle-row">
+                <button aria-pressed={theme === 'light'} onClick={() => changeTheme('light')} type="button">Light</button>
+                <button aria-pressed={theme === 'dark'} onClick={() => changeTheme('dark')} type="button">Dark</button>
+                <button aria-pressed={theme === 'sepia'} onClick={() => changeTheme('sepia')} type="button">Sepia</button>
+              </div>
+            </div>
+
+            <div class="control-group">
               <span>Columns</span>
               <div class="toggle-row">
                 <button aria-pressed={settings.layoutMode === 'one'} onClick={() => updateSetting('layoutMode', 'one')} type="button">1 column</button>
@@ -418,6 +516,13 @@ export default function App() {
                 </ul>
               </div>
             )}
+
+            <NotePanel
+              notes={notes}
+              highlights={highlights}
+              currentPath={currentPath || ''}
+              onNotesChange={setNotes}
+            />
           </div>
         </aside>
       </div>

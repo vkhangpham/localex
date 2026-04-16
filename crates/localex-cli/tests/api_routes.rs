@@ -3,8 +3,21 @@ use axum::{
     http::{Request, StatusCode},
 };
 use http_body_util::BodyExt;
-use localex_cli::{app_router, AppConfig, LayoutMode};
+use localex_cli::{app_router, AppState, AppConfig, LayoutMode};
+use localex_cli::backlinks;
+use std::sync::RwLock;
 use tower::ServiceExt;
+
+fn test_state() -> AppState {
+    let config = AppConfig::for_workspace("/tmp/localex-test").unwrap();
+    let db = localex_cli::db::init_db(&config.data_dir).unwrap();
+    let backlink_index = backlinks::build_index(&config.workspace_root);
+    AppState {
+        config,
+        db,
+        backlinks: std::sync::Arc::new(RwLock::new(backlink_index)),
+    }
+}
 
 #[test]
 fn config_defaults_match_reading_prd() {
@@ -22,7 +35,7 @@ fn config_defaults_match_reading_prd() {
 
 #[tokio::test]
 async fn health_route_returns_ok_json() {
-    let app = app_router(AppConfig::for_workspace("/tmp/localex-test").unwrap());
+    let app = app_router(test_state());
 
     let response = app
         .oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap())
@@ -38,7 +51,7 @@ async fn health_route_returns_ok_json() {
 
 #[tokio::test]
 async fn reader_defaults_route_returns_expected_preferences() {
-    let app = app_router(AppConfig::for_workspace("/tmp/localex-test").unwrap());
+    let app = app_router(test_state());
 
     let response = app
         .oneshot(
