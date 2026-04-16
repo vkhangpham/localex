@@ -94,6 +94,8 @@ pub fn render_markdown(input: &str) -> RenderedDocument {
     options.extension.autolink = true;
     options.extension.description_lists = true;
     options.extension.front_matter_delimiter = Some("---".into());
+    options.extension.math_dollars = true;
+    options.extension.math_code = true;
 
     let root = comrak::parse_document(&arena, input, &options);
 

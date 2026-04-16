@@ -5,6 +5,7 @@ import HighlightLayer from './components/HighlightLayer';
 import NotePanel from './components/NotePanel';
 import type { Highlight, Note } from './lib/types';
 import * as api from './lib/api';
+import { renderMath } from './lib/katex-render';
 
 // ── Types ──
 
@@ -247,6 +248,13 @@ export default function App() {
         window.scrollTo({ top: y, behavior: 'instant' as ScrollBehavior });
       });
     }
+  }, [doc]);
+
+  // Render math (KaTeX) after document HTML updates
+  useEffect(() => {
+    if (!doc) return;
+    const reader = document.querySelector('.reader-rendered');
+    if (reader) renderMath(reader as HTMLElement);
   }, [doc]);
 
   // Auto-select first file

@@ -7,7 +7,7 @@ use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "Local-first reading shell for Markdown workspaces")]
+#[command(author, version, about = "Local-first reading shell for Markdown workspaces", bin_name = "localex")]
 struct Args {
     #[arg(default_value = ".")]
     directory: PathBuf,

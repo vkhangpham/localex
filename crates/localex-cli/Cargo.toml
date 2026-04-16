@@ -5,6 +5,10 @@ edition = "2021"
 license = "MIT"
 description = "Local-first reading shell for Markdown workspaces."
 
+[[bin]]
+name = "localex"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0"
 axum = { version = "0.8", features = ["json"] }

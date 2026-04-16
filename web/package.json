@@ -9,6 +9,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "katex": "^0.16.45",
     "preact": "^10.26.4"
   },
   "devDependencies": {

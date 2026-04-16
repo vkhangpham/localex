@@ -540,6 +540,23 @@ select,
   transform: scale(1.1);
 }
 
+/* ── Math (KaTeX) ── */
+
+.reader-rendered .math-display {
+  margin: 1.25rem 0;
+  overflow-x: auto;
+  padding: 0.5rem 0;
+}
+
+.reader-rendered .math-display > .katex-display {
+  margin: 0;
+}
+
+.reader-rendered .math-error {
+  color: #a04040;
+  font-family: monospace;
+}
+
 /* ── TOC ── */
 
 .toc-group {
