@@ -1,0 +1,11 @@
+target/
+**/node_modules/
+web/dist/
+.vite/
+coverage/
+web/*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
+.hermes/
+.DS_Store
+.env
