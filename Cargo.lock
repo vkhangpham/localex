@@ -659,7 +659,6 @@ dependencies = [
  "http-body-util",
  "serde",
  "serde_json",
- "syntect",
  "tokio",
  "tower",
  "tower-http",

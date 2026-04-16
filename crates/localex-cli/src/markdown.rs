@@ -2,7 +2,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use comrak::nodes::{AstNode, NodeHeading, NodeValue};
-use comrak::{Arena, Options};
+use comrak::plugins::syntect::SyntectAdapterBuilder;
+use comrak::{Arena, Options, Plugins};
 use serde::Serialize;
 
 // ── File tree ──
@@ -109,8 +110,14 @@ pub fn render_markdown(input: &str) -> RenderedDocument {
         }
     }
 
+    let adapter = SyntectAdapterBuilder::new()
+        .theme("base16-ocean.dark")
+        .build();
+    let mut plugins = Plugins::default();
+    plugins.render.codefence_syntax_highlighter = Some(&adapter);
+
     let mut html_buf = Vec::new();
-    comrak::format_html(root, &options, &mut html_buf).unwrap();
+    comrak::format_html_with_plugins(root, &options, &mut html_buf, &plugins).unwrap();
     let html = String::from_utf8(html_buf).unwrap();
 
     // Inject ids into heading tags

@@ -1,5 +1,5 @@
 import type { JSX } from 'preact';
-import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 // ── Types ──
 
@@ -30,6 +30,12 @@ type Heading = {
 type RenderedDoc = {
   html: string;
   headings: Heading[];
+};
+
+type LinkPreview = {
+  html: string;
+  x: number;
+  y: number;
 };
 
 // ── Constants ──
@@ -68,6 +74,10 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focusedHtml, setFocusedHtml] = useState<string | null>(null);
+  const [jumpStack, setJumpStack] = useState<number[]>([]);
+  const [preview, setPreview] = useState<LinkPreview | null>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentPathRef = useRef<string | null>(null);
 
   // Fetch file tree on mount
   useEffect(() => {
@@ -80,6 +90,7 @@ export default function App() {
   // Fetch rendered document when path changes
   useEffect(() => {
     if (!currentPath) return;
+    currentPathRef.current = currentPath;
     setLoading(true);
     setError(null);
     fetch(`/api/render?path=${encodeURIComponent(currentPath)}`)
@@ -126,20 +137,150 @@ export default function App() {
   }, []);
 
   // Focus mode: click images/tables/code/pre inside rendered content
+  // Footnote jump-back: intercept footnote-ref and footnote-backref clicks
   useEffect(() => {
     const reader = document.querySelector('.reader-rendered');
     if (!reader) return;
 
     const onClick = (e: Event) => {
       const target = e.target as HTMLElement;
+      const anchor = target.closest('a');
+      if (!anchor) {
+        // Non-link click: check for focusable block
+        const block = target.closest('img, pre, table');
+        if (!block) return;
+        e.preventDefault();
+        setFocusedHtml((block as HTMLElement).outerHTML);
+        return;
+      }
+
+      // Footnote reference click (in-text → footnote)
+      const fnRef = anchor.closest('.footnote-ref');
+      if (fnRef) {
+        e.preventDefault();
+        const href = anchor.getAttribute('href');
+        if (!href) return;
+        setJumpStack((stack) => [...stack, window.scrollY]);
+        const targetEl = document.querySelector(href);
+        targetEl?.scrollIntoView({ behavior: 'smooth' });
+        return;
+      }
+
+      // Footnote back-reference click (footnote → in-text)
+      const fnBackRef = anchor.closest('.footnote-backref');
+      if (fnBackRef) {
+        e.preventDefault();
+        setJumpStack((stack) => {
+          if (stack.length === 0) return stack;
+          const prevY = stack[stack.length - 1];
+          window.scrollTo({ top: prevY, behavior: 'smooth' });
+          return stack.slice(0, -1);
+        });
+        return;
+      }
+
+      // Regular link: check for focusable block parent
       const block = target.closest('img, pre, table');
-      if (!block) return;
-      e.preventDefault();
-      setFocusedHtml((block as HTMLElement).outerHTML);
+      if (block) {
+        e.preventDefault();
+        setFocusedHtml((block as HTMLElement).outerHTML);
+      }
     };
 
     reader.addEventListener('click', onClick);
     return () => reader.removeEventListener('click', onClick);
+  }, [doc]);
+
+  // Back button for footnote jump stack
+  const goBack = useCallback(() => {
+    setJumpStack((stack) => {
+      if (stack.length === 0) return stack;
+      const prevY = stack[stack.length - 1];
+      window.scrollTo({ top: prevY, behavior: 'smooth' });
+      return stack.slice(0, -1);
+    });
+  }, []);
+
+  // Hover preview for internal links
+  useEffect(() => {
+    const reader = document.querySelector('.reader-rendered');
+    if (!reader) return;
+
+    const isInternalLink = (href: string): boolean => {
+      if (href.startsWith('#')) return true;
+      if (href.endsWith('.md') || href.endsWith('.markdown')) return true;
+      return false;
+    };
+
+    const extractAnchorPreview = (href: string): string => {
+      const id = href.slice(1);
+      const el = document.getElementById(id);
+      if (!el) return '';
+      const tag = el.tagName.toLowerCase();
+      let html = el.outerHTML;
+      const next = el.nextElementSibling;
+      if (next && (next.tagName === 'P' || next.tagName === 'BLOCKQUOTE')) {
+        html += next.outerHTML;
+      }
+      return html;
+    };
+
+    const fetchFilePreview = async (href: string): Promise<string> => {
+      try {
+        const res = await fetch(`/api/render?path=${encodeURIComponent(href)}`);
+        if (!res.ok) return '';
+        const data: RenderedDoc = await res.json();
+        const tmp = document.createElement('div');
+        tmp.innerHTML = data.html;
+        const h1 = tmp.querySelector('h1');
+        const firstP = tmp.querySelector('p');
+        let html = '';
+        if (h1) html += h1.outerHTML;
+        if (firstP) html += firstP.outerHTML;
+        return html || '';
+      } catch {
+        return '';
+      }
+    };
+
+    const onMouseEnter = (e: Event) => {
+      const target = e.target as HTMLElement;
+      const anchor = target.closest('a');
+      if (!anchor) return;
+      const href = anchor.getAttribute('href');
+      if (!href || !isInternalLink(href)) return;
+
+      const rect = anchor.getBoundingClientRect();
+      const x = rect.left;
+      const y = rect.bottom + 8;
+
+      hoverTimer.current = setTimeout(() => {
+        if (href.startsWith('#')) {
+          const html = extractAnchorPreview(href);
+          if (html) setPreview({ html, x, y });
+        } else {
+          fetchFilePreview(href).then((html) => {
+            if (html) setPreview({ html, x, y });
+          });
+        }
+      }, 300);
+    };
+
+    const onMouseLeave = () => {
+      if (hoverTimer.current) {
+        clearTimeout(hoverTimer.current);
+        hoverTimer.current = null;
+      }
+      setPreview(null);
+    };
+
+    reader.addEventListener('mouseover', onMouseEnter);
+    reader.addEventListener('mouseout', onMouseLeave);
+    return () => {
+      reader.removeEventListener('mouseover', onMouseEnter);
+      reader.removeEventListener('mouseout', onMouseLeave);
+      if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    };
   }, [doc]);
 
   const readerStyle = useMemo(
@@ -288,6 +429,20 @@ export default function App() {
             <div class="overlay-block" dangerouslySetInnerHTML={{ __html: focusedHtml }} />
           </div>
         </div>
+      )}
+
+      {jumpStack.length > 0 && (
+        <button class="jump-back-btn" onClick={goBack} type="button">
+          ← Back
+        </button>
+      )}
+
+      {preview && (
+        <div
+          class="hover-preview"
+          style={{ left: `${preview.x}px`, top: `${preview.y}px` }}
+          dangerouslySetInnerHTML={{ __html: preview.html }}
+        />
       )}
     </>
   );
