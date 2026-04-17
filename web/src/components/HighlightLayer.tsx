@@ -16,6 +16,11 @@ export default function HighlightLayer({ currentPath, docHtml, highlights, onHig
   const containerRef = useRef<HTMLDivElement>(null);
   const [toolbar, setToolbar] = useState<{ x: number; y: number; text: string } | null>(null);
 
+  useEffect(() => {
+    if (!containerRef.current) return;
+    wrapTables(containerRef.current);
+  }, [docHtml]);
+
   // Render existing highlights on doc load
   useEffect(() => {
     if (!containerRef.current || highlights.length === 0) return;
@@ -94,6 +99,17 @@ export default function HighlightLayer({ currentPath, docHtml, highlights, onHig
       )}
     </>
   );
+}
+
+function wrapTables(container: HTMLElement) {
+  const tables = Array.from(container.querySelectorAll('table'));
+  tables.forEach((table) => {
+    if (table.parentElement?.classList.contains('table-scroll')) return;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'table-scroll';
+    table.parentElement?.insertBefore(wrapper, table);
+    wrapper.appendChild(table);
+  });
 }
 
 function wrapHighlight(container: HTMLElement, h: Highlight) {

@@ -22,7 +22,12 @@ use crate::{AppState, ReaderPreferences};
 
 pub fn app_router(state: AppState) -> Router {
     let config = &state.config;
-    let dist_dir = config.workspace_root.join("web/dist");
+    // Resolve frontend assets: prefer exe-adjacent, then workspace-relative
+    let exe_dist = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("../lib/localex/web/dist")))
+        .filter(|p| p.exists());
+    let dist_dir = exe_dist.unwrap_or_else(|| config.workspace_root.join("web/dist"));
     let index_html = dist_dir.join("index.html");
     let shared = Arc::new(state);
 
