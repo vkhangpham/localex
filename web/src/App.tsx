@@ -448,7 +448,9 @@ export default function App() {
       ({
         '--reader-font-size': `${settings.fontSizePx}px`,
         '--reader-line-height': String(settings.lineHeight),
-        '--reader-measure': `min(100%, calc(${settings.targetWordsPerLine} * 6.8ch + 5rem))`,
+        '--reader-measure': settings.layoutMode === 'two'
+          ? `min(100%, calc(${settings.targetWordsPerLine} * 6.8ch * 2 + clamp(40px, 5vw, 72px) + 10rem))`
+          : `min(100%, calc(${settings.targetWordsPerLine} * 6.8ch + 5rem))`,
         '--reader-columns': settings.layoutMode === 'two' ? '2' : '1',
         '--reader-font-family': FONT_STACKS[settings.fontFamily],
       }) as JSX.CSSProperties,

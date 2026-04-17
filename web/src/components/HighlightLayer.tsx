@@ -72,9 +72,12 @@ export default function HighlightLayer({ currentPath, docHtml, highlights, onHig
 
   return (
     <>
-      <div ref={containerRef} onMouseUp={onMouseUp}>
-        <div dangerouslySetInnerHTML={{ __html: docHtml }} />
-      </div>
+      <div
+        class="reader-doc"
+        dangerouslySetInnerHTML={{ __html: docHtml }}
+        onMouseUp={onMouseUp}
+        ref={containerRef}
+      />
       {toolbar && (
         <div class="highlight-toolbar" style={{ left: `${toolbar.x}px`, top: `${toolbar.y}px` }}>
           {HIGHLIGHT_COLORS.map((color) => (

@@ -222,13 +222,19 @@ img {
   font-family: var(--reader-font-family);
   font-size: var(--reader-font-size);
   line-height: var(--reader-line-height);
+}
+
+.reader-doc {
+  width: 100%;
   column-count: var(--reader-columns);
   column-gap: clamp(40px, 5vw, 72px);
   text-rendering: optimizeLegibility;
+  overflow-wrap: break-word;
 }
 
-.reader-content > * {
+.reader-doc > * {
   break-inside: avoid;
+  max-width: 100%;
 }
 
 .reader-content h1,
@@ -500,6 +506,8 @@ select,
   margin: 1rem 0;
   font-size: 0.92em;
   cursor: zoom-in;
+  table-layout: fixed;
+  overflow-wrap: break-word;
 }
 
 .reader-rendered th,
